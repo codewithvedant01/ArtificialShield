@@ -1,5 +1,6 @@
 """Generate full VIT Bhopal Review 2 project report (.docx)."""
 
+import json
 from pathlib import Path
 
 from docx import Document
@@ -35,7 +36,22 @@ def table(doc: Document, headers: list[str], rows: list[list[str]]) -> None:
     doc.add_paragraph("")
 
 
+def load_metrics() -> dict:
+    bench_path = Path(__file__).resolve().parents[1] / "data" / "review2_benchmark.json"
+    if bench_path.exists():
+        return json.loads(bench_path.read_text(encoding="utf-8"))
+    return {
+        "threshold": 0.85,
+        "baseline_attack_success_rate": 0.5,
+        "proxy_attack_block_rate": 1.0,
+        "benign_false_positive_rate": 0.0,
+        "latency": {"p50_ms": 91.46, "p95_ms": 114.26, "p99_ms": 115.66},
+    }
+
+
 def build_report(output_path: Path) -> None:
+    metrics = load_metrics()
+    lat = metrics["latency"]
     doc = Document()
     normal = doc.styles["Normal"]
     normal.font.name = "Times New Roman"
@@ -144,7 +160,17 @@ def build_report(output_path: Path) -> None:
     heading(doc, "ABSTRACT")
     body(doc, "Purpose: Large Language Model applications increasingly consume untrusted external content such as web pages, retrieved documents, e-mail bodies, and tool outputs. When such content carries adversarial instructions, the model may follow them instead of the developer’s intended policy. This project addresses indirect prompt injection by placing detection at the transport boundary rather than relying only on prompt-level instructions.")
     body(doc, "Methodology: ArtificialShield is an inline ML guardrail proxy between a client application and an LLM backend. Every inbound prompt and retrieved context fragment is normalized, segmented, and scored using a DeBERTa-v3 injection classifier (ProtectAI/deberta-v3-base-prompt-injection-v2). Requests above a calibrated threshold (τ = 0.85) are blocked and logged; other requests are forwarded. The stack uses Python 3.11, FastAPI/Uvicorn, Hugging Face Transformers with PyTorch, SQLite, Streamlit, pytest, Locust, and Docker.")
-    body(doc, "Findings / Review 2 status: Review 2 completed FastAPI proxy integration, SQLite audit logging, Streamlit dashboard delivery, and threshold calibration. The vulnerable baseline agent and attack reproduction harness from Review 1 were replayed through the proxy. On the project attack set (4 injection variants), the proxy achieved 100% block rate with 0% false-positive rate on the benign held-out prompts tested. CPU-only integrated latency measured p50 ≈ 42 ms, p95 ≈ 78 ms, and p99 ≈ 91 ms, meeting the sub-100 ms p95 target.")
+    body(
+        doc,
+        f"Findings / Review 2 status: Review 2 completed FastAPI proxy integration, SQLite audit logging, "
+        f"Streamlit dashboard delivery, and threshold calibration (τ = {metrics['threshold']}). The vulnerable "
+        f"baseline agent and attack reproduction harness from Review 1 were replayed through the proxy. On the "
+        f"project attack set (4 injection variants), the proxy achieved {metrics['proxy_attack_block_rate'] * 100:.0f}% "
+        f"block rate with {metrics['benign_false_positive_rate'] * 100:.0f}% false-positive rate on the benign "
+        f"held-out prompts tested. CPU-only integrated latency measured p50 ≈ {lat['p50_ms']} ms, p95 ≈ "
+        f"{lat['p95_ms']} ms, and p99 ≈ {lat['p99_ms']} ms. The p95 value is marginally above the 100 ms "
+        f"target on the test machine; dynamic quantization and batch tuning are planned for Review 3.",
+    )
 
     doc.add_page_break()
     heading(doc, "CHAPTER-1: PROJECT DESCRIPTION AND OUTLINE")
@@ -238,29 +264,35 @@ def build_report(output_path: Path) -> None:
         ],
     )
     heading(doc, "5.5 Test and Validation", 2)
-    body(doc, "pytest validates normalization, segmentation, and policy logic. Attack harness replays direct override, role-play, base64 obfuscation, and delimiter injection scenarios. Baseline vulnerable agent shows 100% attack success without proxy; proxy blocks all four variants in Review 2 testing.")
+    body(
+        doc,
+        f"pytest validates normalization, segmentation, and policy logic. Attack harness replays direct override, "
+        f"role-play, base64 obfuscation, and delimiter injection scenarios. Baseline vulnerable agent shows "
+        f"{metrics['baseline_attack_success_rate'] * 100:.0f}% attack success without proxy on the heuristic "
+        f"simulator; proxy blocks all four variants in Review 2 classifier testing.",
+    )
     heading(doc, "5.6 Performance Analysis", 2)
     table(
         doc,
         ["Metric", "Target", "Review 2 Result"],
         [
-            ["Added latency p50 (CPU)", "—", "≈ 42 ms"],
-            ["Added latency p95 (CPU)", "< 100 ms", "≈ 78 ms"],
-            ["Added latency p99 (CPU)", "—", "≈ 91 ms"],
-            ["False-positive rate (benign set)", "< 2%", "0% (n=3 tested)"],
-            ["Attack block rate (harness)", "High", "100% (4/4)"],
-            ["Baseline attack success (no proxy)", "Demonstrate threat", "100% (4/4)"],
+            ["Added latency p50 (CPU)", "—", f"≈ {lat['p50_ms']} ms"],
+            ["Added latency p95 (CPU)", "< 100 ms", f"≈ {lat['p95_ms']} ms"],
+            ["Added latency p99 (CPU)", "—", f"≈ {lat['p99_ms']} ms"],
+            ["False-positive rate (benign set)", "< 2%", f"{metrics['benign_false_positive_rate'] * 100:.0f}% (n=3 tested)"],
+            ["Attack block rate (harness)", "High", f"{metrics['proxy_attack_block_rate'] * 100:.0f}% (4/4)"],
+            ["Baseline attack success (no proxy)", "Demonstrate threat", f"{metrics['baseline_attack_success_rate'] * 100:.0f}% (2/4 heuristic)"],
         ],
     )
     heading(doc, "5.7 Summary", 2)
-    body(doc, "Review 2 establishes integrated enforcement with initial quantitative validation meeting the CPU latency and false-positive targets on the tested corpora.")
+    body(doc, "Review 2 establishes integrated enforcement with initial quantitative validation. False-positive and block-rate targets are met on the tested corpora; p95 latency is marginally above target and scheduled for optimization in Review 3.")
 
     doc.add_page_break()
     heading(doc, "CHAPTER-6: PROJECT OUTCOME AND APPLICABILITY")
     heading(doc, "6.2 Key Implementation Outlines of the System", 2)
     body(doc, "Inline interception; DeBERTa-v3 semantic detection; threshold enforcement independent of downstream provider; structured 403 refusals; SQLite audit records; OpenAI-compatible interface; Streamlit visibility.")
     heading(doc, "6.3 Significant Project Outcomes", 2)
-    body(doc, "Review 2 demonstrates that transport-boundary classifier enforcement is deployable with sub-100 ms p95 latency on CPU and full block rate on the reproduced attack harness.")
+    body(doc, "Review 2 demonstrates that transport-boundary classifier enforcement is deployable on CPU with full block rate on the reproduced attack harness and analyst-visible audit logging.")
     heading(doc, "6.4 Project Applicability on Real-World Applications", 2)
     body(doc, "The proxy can be inserted in RAG pipelines, e-mail assistants, document summarizers, and tool-using agents processing external content with minimal client changes.")
     heading(doc, "6.5 Inference", 2)

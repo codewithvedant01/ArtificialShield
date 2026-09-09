@@ -1,0 +1,13 @@
+{
+  "model": "ProtectAI/deberta-v3-base-prompt-injection-v2",
+  "threshold": 0.85,
+  "baseline_attack_success_rate": 0.5,
+  "proxy_attack_block_rate": 1.0,
+  "benign_false_positive_rate": 0.0,
+  "latency": {
+    "p50_ms": 91.46,
+    "p95_ms": 114.26,
+    "p99_ms": 115.66,
+    "samples": 35
+  }
+}
