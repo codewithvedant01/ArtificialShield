@@ -22,7 +22,7 @@ def init_db() -> None:
             )
             """
         )
-        conn.commit()
+        conn.commit() 
 
 
 def log_event(
