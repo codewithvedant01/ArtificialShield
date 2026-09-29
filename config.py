@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     model_name: str = "ProtectAI/deberta-v3-base-prompt-injection-v2"
     threshold: float = 0.85
     max_segment_chars: int = 512
-    backend_url: str = "http://localhost:11434/v1/chat/completions"
+    backend_url: str = "https://artificialshield.onrender.com/scan"
     backend_api_key: str = ""
     db_path: str = "data/audit.db"
     host: str = "0.0.0.0"
