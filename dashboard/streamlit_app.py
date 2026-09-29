@@ -33,7 +33,7 @@ SAMPLES = {
     ),
 }
 
-API_BASE = "http://127.0.0.1:8080"
+API_BASE = "https://artificialshield.onrender.com/scan"
 
 st.set_page_config(
     page_title="ArtificialShield",
@@ -153,7 +153,7 @@ tab_scan, tab_ops = st.tabs(["Live scan", "Operations log"])
 with tab_scan:
     left, right = st.columns((1.15, 0.85), gap="large")
     with left:
-        st.markdown("#### Test the guardrail")
+        st.markdown("#### Enter the prompt to be scanned")
         sample_name = st.selectbox("Sample prompts", list(SAMPLES.keys()))
         if st.button("Load sample into editor"):
             st.session_state.scan_input = SAMPLES[sample_name]
@@ -167,15 +167,9 @@ with tab_scan:
         )
         scan_clicked = st.button("Scan text", type="primary", disabled=not bool(health))
     with right:
-        st.markdown("#### What this demo shows")
-        st.markdown(
-            """
-            - **Allowed** text is forwarded conceptually (score below threshold).
-            - **Blocked** text never reaches the LLM backend.
-            - Blocked and flagged items are stored in SQLite for review.
-            """
-        )
-        st.caption("Use an attack sample, then open Operations log to inspect the payload.")
+        st.markdown("")
+
+
 
     if scan_clicked:
         if not text.strip():
