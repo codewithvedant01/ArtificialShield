@@ -7,10 +7,10 @@ import urllib.request
 import pandas as pd
 import streamlit as st
 
-ROOT = Path(__file__).resolve().parents[1]
-DASHBOARD_DIR = Path(__file__).resolve().parent
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+DASHBOARD_DIR = pathlib.Path(__file__).resolve().parent
 
-sys.path = [p for p in sys.path if Path(p).resolve() != DASHBOARD_DIR]
+sys.path = [p for p in sys.path if pathlib.Path(p).resolve() != DASHBOARD_DIR]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 sys.modules.pop("app", None)
@@ -33,7 +33,7 @@ SAMPLES = {
     ),
 }
 
-API_BASE = "https://artificialshield.onrender.com/scan"
+API_BASE = "https://artificialshield.onrender.com"
 
 st.set_page_config(
     page_title="ArtificialShield",
