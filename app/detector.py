@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+import gc
 import time
 
 import torch
@@ -22,30 +23,35 @@ class InjectionDetector:
             low_cpu_mem_usage=True,
         )
         self.model.eval()
-        torch.set_num_threads(max(1, torch.get_num_threads()))
+        torch.set_num_threads(1)
+        gc.collect()
 
     def score_segment(self, text: str) -> SegmentScore:
+        scored, _ = self.score_segments([text])
+        return scored[0]
+
+    def score_segments(self, segments: list[str]) -> tuple[list[SegmentScore], float]:
+        if not segments:
+            return [], 0.0
+
+        # Batch tokenization for high-throughput parallel inference
         inputs = self.tokenizer(
-            text,
+            segments,
             return_tensors="pt",
             truncation=True,
             max_length=512,
             padding=True,
         )
-        start = time.perf_counter()
         with torch.no_grad():
             logits = self.model(**inputs).logits
-            probs = torch.softmax(logits, dim=-1)[0]
-        _ = (time.perf_counter() - start) * 1000
+            probs = torch.softmax(logits, dim=-1)
 
         injection_idx = 1 if self.model.config.num_labels == 2 else 0
-        score = float(probs[injection_idx])
-        label = "INJECTION" if score >= settings.threshold else "BENIGN"
-        return SegmentScore(text=text, score=score, label=label)
+        results: list[SegmentScore] = []
+        for i, segment in enumerate(segments):
+            score = float(probs[i, injection_idx])
+            label = "INJECTION" if score >= settings.threshold else "BENIGN"
+            results.append(SegmentScore(text=segment, score=score, label=label))
 
-    def score_segments(self, segments: list[str]) -> tuple[list[SegmentScore], float]:
-        if not segments:
-            return [], 0.0
-        results = [self.score_segment(segment) for segment in segments]
-        max_score = max(item.score for item in results)
+        max_score = max(item.score for item in results) if results else 0.0
         return results, max_score

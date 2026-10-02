@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field
 
 from app.audit import init_db, log_event
 from app.detector import InjectionDetector
-from app.normalize import normalize_text, segment_text
+from app.normalize import extract_encoded_payloads, normalize_text, segment_text
 from config import settings
 
 detector: InjectionDetector | None = None
@@ -26,7 +26,8 @@ def get_detector() -> InjectionDetector:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_detector()
+    init_db()
+    # Note: Detector is lazy-loaded on demand to keep startup memory <40MB and pass cloud port checks
     yield
 
 
@@ -69,13 +70,24 @@ class ScanResponse(BaseModel):
 
 
 def _extract_text(payload: ChatCompletionRequest) -> str:
-    parts = [normalize_text(message.content) for message in payload.messages if message.content]
-    return "\n".join(part for part in parts if part)
+    parts = []
+    for message in payload.messages:
+        content = normalize_text(message.content)
+        if content:
+            parts.append(f"[{message.role}]: {content}")
+    return "\n".join(parts)
 
 
 def _evaluate_text(text: str) -> tuple[float, list[dict[str, Any]], float]:
     det = get_detector()
     segments = segment_text(text, settings.max_segment_chars)
+
+    # Decode and inspect any obfuscated base64 substrings
+    for encoded in extract_encoded_payloads(text):
+        for sub in segment_text(encoded, settings.max_segment_chars):
+            if sub not in segments:
+                segments.append(f"[decoded base64]: {sub}")
+
     start = time.perf_counter()
     scored, max_score = det.score_segments(segments)
     latency_ms = (time.perf_counter() - start) * 1000

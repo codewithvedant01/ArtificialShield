@@ -241,10 +241,16 @@ def get_direct_detector():
 
 def scan_text_direct(text: str, custom_threshold: float, policy_mode: str) -> dict:
     from app.audit import log_event
-    from app.normalize import segment_text
+    from app.normalize import extract_encoded_payloads, segment_text
 
     detector = get_direct_detector()
     segments = segment_text(text, settings.max_segment_chars)
+
+    for encoded in extract_encoded_payloads(text):
+        for sub in segment_text(encoded, settings.max_segment_chars):
+            if sub not in segments:
+                segments.append(f"[decoded base64]: {sub}")
+
     start = time.perf_counter()
     scored, max_score = detector.score_segments(segments)
     latency_ms = (time.perf_counter() - start) * 1000
