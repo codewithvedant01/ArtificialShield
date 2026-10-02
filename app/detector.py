@@ -17,7 +17,10 @@ class SegmentScore:
 class InjectionDetector:
     def __init__(self) -> None:
         self.tokenizer = AutoTokenizer.from_pretrained(settings.model_name)
-        self.model = AutoModelForSequenceClassification.from_pretrained(settings.model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(
+            settings.model_name,
+            low_cpu_mem_usage=True,
+        )
         self.model.eval()
         torch.set_num_threads(max(1, torch.get_num_threads()))
 
