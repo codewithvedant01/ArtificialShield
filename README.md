@@ -5,7 +5,10 @@ Inline ML guardrail proxy for detecting indirect prompt injection before LLM dis
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+# Launch both backend & dashboard together:
+python runall.py
+
+# Or launch independently:
 uvicorn app.gateway:app --host 0.0.0.0 --port 8080
 streamlit run dashboard/streamlit_app.py
 ```

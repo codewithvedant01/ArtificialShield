@@ -1,9 +1,11 @@
+from contextlib import asynccontextmanager
 import json
 import time
 from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from app.audit import init_db, log_event
@@ -11,8 +13,36 @@ from app.detector import InjectionDetector
 from app.normalize import normalize_text, segment_text
 from config import settings
 
-app = FastAPI(title="ArtificialShield Guardrail Proxy", version="0.2.0")
 detector: InjectionDetector | None = None
+
+
+def get_detector() -> InjectionDetector:
+    global detector
+    if detector is None:
+        init_db()
+        detector = InjectionDetector()
+    return detector
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_detector()
+    yield
+
+
+app = FastAPI(
+    title="ArtificialShield Guardrail Proxy",
+    version="0.2.0",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ChatMessage(BaseModel):
@@ -38,24 +68,16 @@ class ScanResponse(BaseModel):
     segments: list[dict[str, Any]]
 
 
-@app.on_event("startup")
-def startup() -> None:
-    global detector
-    init_db()
-    detector = InjectionDetector()
-
-
 def _extract_text(payload: ChatCompletionRequest) -> str:
     parts = [normalize_text(message.content) for message in payload.messages if message.content]
     return "\n".join(part for part in parts if part)
 
 
 def _evaluate_text(text: str) -> tuple[float, list[dict[str, Any]], float]:
-    if detector is None:
-        raise HTTPException(status_code=503, detail="Detector not initialized")
+    det = get_detector()
     segments = segment_text(text, settings.max_segment_chars)
     start = time.perf_counter()
-    scored, max_score = detector.score_segments(segments)
+    scored, max_score = det.score_segments(segments)
     latency_ms = (time.perf_counter() - start) * 1000
     segment_payload = [
         {"text": item.text, "score": round(item.score, 4), "label": item.label}
@@ -136,13 +158,43 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
             decision=decision,
         )
 
+    if not settings.backend_url:
+        return {
+            "id": "chatcmpl-shield-passthrough",
+            "object": "chat.completion",
+            "model": request.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "ArtificialShield: Payload passed guardrail inspection (no upstream LLM backend configured).",
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+            "guardrail": {
+                "decision": decision,
+                "max_score": round(max_score, 4),
+                "threshold": settings.threshold,
+                "latency_ms": round(latency_ms, 2),
+            },
+        }
+
     headers = {"Authorization": f"Bearer {settings.backend_api_key}"} if settings.backend_api_key else {}
-    async with httpx.AsyncClient(timeout=60.0) as client:
-        response = await client.post(
-            settings.backend_url,
-            headers=headers,
-            json=request.model_dump(),
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                settings.backend_url,
+                headers=headers,
+                json=request.model_dump(),
+            )
+        if response.status_code >= 400:
+            raise HTTPException(status_code=response.status_code, detail=response.text)
+        return response.json()
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to upstream LLM backend ({settings.backend_url}): {exc}",
         )
-    if response.status_code >= 400:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
-    return response.json()
+

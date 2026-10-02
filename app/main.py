@@ -1,17 +1,9 @@
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+"""Application entrypoint for ArtificialShield."""
+import uvicorn
+from app.gateway import app
+from config import settings
 
-app = FastAPI()
+__all__ = ["app"]
 
-class ScanRequest(BaseModel):
-    text: str
-
-@app.post("/scan")
-def scan_text(request: ScanRequest):
-    # Yahaan aap apna ML model integration daal sakte hain.
-    # Abhi ke liye hum mock logic use kar rahe hain.
-    
-    if "attack" in request.text.lower():
-        return {"status": "BLOCKED", "score": 0.95}
-    
-    return {"status": "ALLOWED", "score": 0.10}
+if __name__ == "__main__":
+    uvicorn.run("app.main:app", host=settings.host, port=settings.port, reload=True)

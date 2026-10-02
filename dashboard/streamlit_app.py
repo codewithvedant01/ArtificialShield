@@ -1,5 +1,5 @@
-from pathlib import Path
 import json
+import os
 import pathlib
 import sys
 import urllib.error
@@ -34,7 +34,9 @@ SAMPLES = {
     ),
 }
 
-API_BASE = "https://artificialshield.onrender.com"
+LOCAL_API_URL = f"http://127.0.0.1:{settings.port}"
+REMOTE_API_URL = "https://artificialshield.onrender.com"
+DEFAULT_API_BASE = os.getenv("API_BASE", LOCAL_API_URL)
 
 st.set_page_config(
     page_title="ArtificialShield",
@@ -84,18 +86,18 @@ st.markdown(
 )
 
 
-def api_health() -> dict | None:
+def api_health(base_url: str) -> dict | None:
     try:
-        with urllib.request.urlopen(f"{API_BASE}/health", timeout=3) as response:
+        with urllib.request.urlopen(f"{base_url}/health", timeout=3) as response:
             return json.loads(response.read().decode())
     except Exception:
         return None
 
 
-def scan_text(text: str) -> dict:
+def scan_text(text: str, base_url: str) -> dict:
     payload = json.dumps({"text": text}).encode()
     request = urllib.request.Request(
-        f"{API_BASE}/scan",
+        f"{base_url}/scan",
         data=payload,
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -104,7 +106,12 @@ def scan_text(text: str) -> dict:
         with urllib.request.urlopen(request, timeout=60) as response:
             return json.loads(response.read().decode())
     except urllib.error.HTTPError as exc:
-        return json.loads(exc.read().decode())
+        try:
+            return json.loads(exc.read().decode())
+        except Exception:
+            return {"error": str(exc), "decision": "error"}
+    except Exception as exc:
+        return {"error": str(exc), "decision": "error"}
 
 
 def decision_pill(decision: str) -> str:
@@ -117,9 +124,35 @@ def decision_pill(decision: str) -> str:
     return f'<span class="pill {css}">{label}</span>'
 
 
-health = api_health()
 init_db()
 events = fetch_events()
+
+# Sidebar Control Plane
+with st.sidebar:
+    st.subheader("Control plane")
+    api_target = st.radio(
+        "API Target",
+        options=["Local Backend", "Remote Render", "Custom URL"],
+        index=0,
+    )
+    if api_target == "Local Backend":
+        api_base = LOCAL_API_URL
+    elif api_target == "Remote Render":
+        api_base = REMOTE_API_URL
+    else:
+        api_base = st.text_input("Custom API Base URL", value=DEFAULT_API_BASE)
+
+    health = api_health(api_base)
+    if health:
+        st.success(f"Guardrail API is online ({api_target})")
+        st.caption(health.get("model", ""))
+    else:
+        st.error(f"API is offline at {api_base}.\nStart backend on port {settings.port}.")
+    st.write(f"**Policy:** `{settings.policy_mode}`")
+    st.write(f"**Threshold:** `{settings.threshold}`")
+    st.write(f"**Scan API:** `{api_base}/scan`")
+    if st.button("Refresh logs", width="stretch"):
+        st.rerun()
 
 st.markdown(
     f"""
@@ -135,19 +168,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-with st.sidebar:
-    st.subheader("Control plane")
-    if health:
-        st.success("Guardrail API is online")
-        st.caption(health.get("model", ""))
-    else:
-        st.error("API is offline. Start uvicorn on port 8080.")
-    st.write(f"**Policy:** `{settings.policy_mode}`")
-    st.write(f"**Threshold:** `{settings.threshold}`")
-    st.write(f"**Scan API:** `{API_BASE}/scan`")
-    if st.button("Refresh logs", width="stretch"):
-        st.rerun()
 
 tab_scan, tab_ops = st.tabs(["Live scan", "Operations log"])
 
@@ -177,7 +197,7 @@ with tab_scan:
             st.warning("Enter some text first.")
         else:
             with st.spinner("Scoring with DeBERTa-v3…"):
-                result = scan_text(text.strip())
+                result = scan_text(text.strip(), api_base)
             decision = result.get("decision", "unknown")
             score = result.get("max_score", 0)
             latency = result.get("latency_ms", 0)
