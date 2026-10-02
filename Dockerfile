@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+
 WORKDIR /app
 
 # Install minimal system dependencies
@@ -13,7 +15,9 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt
 
 COPY . .
-RUN mkdir -p data
+RUN mkdir -p data && chown -R appuser:appuser /app
+
+USER appuser
 
 EXPOSE 8080
 

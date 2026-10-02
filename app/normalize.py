@@ -1,4 +1,5 @@
 import base64
+import html
 import re
 import unicodedata
 
@@ -12,6 +13,8 @@ def normalize_text(text: str) -> str:
     """Normalize text against unicode evasion, invisible characters, and whitespace anomalies."""
     if not text:
         return ""
+    # Decode HTML entities
+    text = html.unescape(text)
     # Strip zero-width and invisible characters
     text = ZERO_WIDTH_CHARS.sub("", text)
     # Strip dangerous non-printable control characters
@@ -25,8 +28,12 @@ def normalize_text(text: str) -> str:
     return text.strip()
 
 
-def extract_encoded_payloads(text: str) -> list[str]:
+def extract_encoded_payloads(text: str, max_depth: int = 3, max_size: int = 1024 * 100) -> list[str]:
     """Detect and decode potential Base64 payloads hidden inside text."""
+    # Cap size and depth to prevent DoS via recursive/massive decompression
+    if max_depth <= 0 or len(text) > max_size:
+        return []
+        
     candidates: list[str] = []
     # Match potential base64 tokens of at least 16 characters
     tokens = re.findall(r"[A-Za-z0-9+/]{16,}={0,2}", text)
@@ -35,7 +42,11 @@ def extract_encoded_payloads(text: str) -> list[str]:
             raw = base64.b64decode(token).decode("utf-8", errors="ignore").strip()
             # Verify decoded content is meaningful text (at least 6 readable characters)
             if len(raw) >= 6 and all(c.isprintable() or c in "\n\t" for c in raw):
-                candidates.append(normalize_text(raw))
+                norm = normalize_text(raw)
+                candidates.append(norm)
+                # Recursively extract if nested
+                nested = extract_encoded_payloads(raw, max_depth=max_depth - 1, max_size=max_size)
+                candidates.extend(nested)
         except Exception:
             continue
     return candidates

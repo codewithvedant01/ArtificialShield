@@ -10,45 +10,54 @@ def init_db() -> None:
     with sqlite3.connect(settings.db_path) as conn:
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS blocked_events (
+            CREATE TABLE IF NOT EXISTS audit_log (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp TEXT NOT NULL,
-                endpoint TEXT NOT NULL,
+                request_id TEXT NOT NULL,
+                source_label TEXT NOT NULL,
                 max_score REAL NOT NULL,
+                offending_chunk TEXT NOT NULL,
                 threshold REAL NOT NULL,
-                latency_ms REAL NOT NULL,
-                payload TEXT NOT NULL,
-                decision TEXT NOT NULL
+                action TEXT NOT NULL
             )
             """
         )
-        conn.commit() 
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp 
+            ON audit_log(timestamp)
+            """
+        )
+        conn.commit()
 
 
 def log_event(
     *,
-    endpoint: str,
+    request_id: str,
+    source_label: str,
     max_score: float,
+    offending_chunk: str,
     threshold: float,
-    latency_ms: float,
-    payload: str,
-    decision: str,
+    action: str,
 ) -> None:
+    # Truncate offending chunk if it's too large, don't store full payload
+    truncated_chunk = offending_chunk[:1024]
+    
     with sqlite3.connect(settings.db_path) as conn:
         conn.execute(
             """
-            INSERT INTO blocked_events
-            (timestamp, endpoint, max_score, threshold, latency_ms, payload, decision)
+            INSERT INTO audit_log
+            (timestamp, request_id, source_label, max_score, offending_chunk, threshold, action)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
-                endpoint,
+                request_id,
+                source_label,
                 max_score,
+                truncated_chunk,
                 threshold,
-                latency_ms,
-                payload,
-                decision,
+                action,
             ),
         )
         conn.commit()
@@ -59,8 +68,8 @@ def fetch_events(limit: int = 500) -> list[dict]:
         conn.row_factory = sqlite3.Row
         rows = conn.execute(
             """
-            SELECT * FROM blocked_events
-            ORDER BY id DESC
+            SELECT * FROM audit_log
+            ORDER BY timestamp DESC
             LIMIT ?
             """,
             (limit,),

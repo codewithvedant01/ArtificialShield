@@ -1,35 +1,43 @@
+import asyncio
 from contextlib import asynccontextmanager
 import json
-import time
+import threading
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-from app.audit import init_db, log_event
+from app.audit import init_db
 from app.detector import InjectionDetector
-from app.normalize import extract_encoded_payloads, normalize_text, segment_text
+from app.normalize import normalize_text
+from app.policy import evaluate_payload
 from config import settings
 
 detector: InjectionDetector | None = None
+warmup_lock = threading.Lock()
 
+def _warmup_model():
+    global detector
+    with warmup_lock:
+        if detector is None:
+            init_db()
+            detector = InjectionDetector()
 
 def get_detector() -> InjectionDetector:
     global detector
     if detector is None:
-        init_db()
-        detector = InjectionDetector()
+        _warmup_model()
     return detector
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    # Note: Detector is lazy-loaded on demand to keep startup memory <40MB and pass cloud port checks
+    # Startup warm-up in a background thread to prevent first-request lag
+    threading.Thread(target=_warmup_model, daemon=True).start()
     yield
-
 
 app = FastAPI(
     title="ArtificialShield Guardrail Proxy",
@@ -45,133 +53,68 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 class ChatMessage(BaseModel):
     role: str
     content: str
-
 
 class ChatCompletionRequest(BaseModel):
     model: str = "gpt-4o-mini"
     messages: list[ChatMessage]
     temperature: float = 0.2
-
+    stream: bool = False
 
 class ScanRequest(BaseModel):
     text: str = Field(..., min_length=1)
 
-
-class ScanResponse(BaseModel):
-    max_score: float
-    threshold: float
-    decision: str
-    latency_ms: float
-    segments: list[dict[str, Any]]
-
-
-def _extract_text(payload: ChatCompletionRequest) -> str:
+def _extract_untrusted_text(payload: ChatCompletionRequest) -> str:
     parts = []
+    # Segment trusted vs untrusted text
+    trusted_roles = {"system", "developer"}
     for message in payload.messages:
-        content = normalize_text(message.content)
-        if content:
-            parts.append(f"[{message.role}]: {content}")
+        if message.role not in trusted_roles:
+            content = normalize_text(message.content)
+            if content:
+                parts.append(f"[{message.role}]: {content}")
     return "\n".join(parts)
-
-
-def _evaluate_text(text: str) -> tuple[float, list[dict[str, Any]], float]:
-    det = get_detector()
-    segments = segment_text(text, settings.max_segment_chars)
-
-    # Decode and inspect any obfuscated base64 substrings
-    for encoded in extract_encoded_payloads(text):
-        for sub in segment_text(encoded, settings.max_segment_chars):
-            if sub not in segments:
-                segments.append(f"[decoded base64]: {sub}")
-
-    start = time.perf_counter()
-    scored, max_score = det.score_segments(segments)
-    latency_ms = (time.perf_counter() - start) * 1000
-    segment_payload = [
-        {"text": item.text, "score": round(item.score, 4), "label": item.label}
-        for item in scored
-    ]
-    return max_score, segment_payload, latency_ms
-
-
-def _decision(max_score: float) -> str:
-    if max_score >= settings.threshold:
-        return "blocked"
-    if settings.policy_mode == "flag" and max_score >= settings.threshold - 0.1:
-        return "flagged"
-    return "allowed"
 
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    # Must not trigger model loading
     return {"status": "ok", "model": settings.model_name}
 
-
-@app.post("/scan", response_model=ScanResponse)
-def scan(request: ScanRequest) -> ScanResponse:
-    max_score, segments, latency_ms = _evaluate_text(request.text)
-    decision = _decision(max_score)
-    if decision in {"blocked", "flagged"}:
-        log_event(
-            endpoint="/scan",
-            max_score=max_score,
-            threshold=settings.threshold,
-            latency_ms=latency_ms,
-            payload=request.text[:4000],
-            decision=decision,
-        )
-    return ScanResponse(
-        max_score=round(max_score, 4),
-        threshold=settings.threshold,
-        decision=decision,
-        latency_ms=round(latency_ms, 2),
-        segments=segments,
-    )
-
+@app.post("/scan")
+def scan(request: ScanRequest) -> dict[str, Any]:
+    det = get_detector()
+    result = evaluate_payload(det, request.text, source_label="/scan")
+    return {
+        "max_score": result["max_score"],
+        "threshold": settings.threshold,
+        "decision": result["action"],
+        "latency_ms": result["latency_ms"],
+        "segments": result["segments"],
+    }
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
-    text = _extract_text(request)
-    max_score, segments, latency_ms = _evaluate_text(text)
-    decision = _decision(max_score)
-
-    if decision == "blocked":
-        log_event(
-            endpoint="/v1/chat/completions",
-            max_score=max_score,
-            threshold=settings.threshold,
-            latency_ms=latency_ms,
-            payload=text[:4000],
-            decision=decision,
-        )
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "prompt_injection_detected",
-                "message": "Request blocked by ArtificialShield guardrail.",
-                "max_score": round(max_score, 4),
-                "threshold": settings.threshold,
-                "latency_ms": round(latency_ms, 2),
-                "segments": segments,
-            },
-        )
-
-    if decision == "flagged":
-        log_event(
-            endpoint="/v1/chat/completions",
-            max_score=max_score,
-            threshold=settings.threshold,
-            latency_ms=latency_ms,
-            payload=text[:4000],
-            decision=decision,
-        )
+async def chat_completions(request: ChatCompletionRequest) -> Any:
+    text = _extract_untrusted_text(request)
+    if text:
+        det = get_detector()
+        result = evaluate_payload(det, text, source_label="/v1/chat/completions")
+        
+        if result["action"] == "blocked":
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "error": "prompt_injection_detected",
+                    "request_id": result["request_id"],
+                    "max_score": result["max_score"],
+                    "offending_chunk_index": result["offending_chunk_index"],
+                },
+            )
 
     if not settings.backend_url:
-        return {
+        resp_json = {
             "id": "chatcmpl-shield-passthrough",
             "object": "chat.completion",
             "model": request.model,
@@ -185,28 +128,45 @@ async def chat_completions(request: ChatCompletionRequest) -> dict[str, Any]:
                     "finish_reason": "stop",
                 }
             ],
-            "guardrail": {
-                "decision": decision,
-                "max_score": round(max_score, 4),
-                "threshold": settings.threshold,
-                "latency_ms": round(latency_ms, 2),
-            },
         }
+        if request.stream:
+            async def mock_stream():
+                yield f"data: {json.dumps(resp_json)}\n\n"
+                yield "data: [DONE]\n\n"
+            return StreamingResponse(mock_stream(), media_type="text/event-stream")
+        return resp_json
 
     headers = {"Authorization": f"Bearer {settings.backend_api_key}"} if settings.backend_api_key else {}
+    
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
-                settings.backend_url,
-                headers=headers,
-                json=request.model_dump(),
-            )
-        if response.status_code >= 400:
-            raise HTTPException(status_code=response.status_code, detail=response.text)
-        return response.json()
+        if request.stream:
+            async def proxy_stream():
+                async with httpx.AsyncClient(timeout=60.0) as client:
+                    async with client.stream(
+                        "POST", 
+                        settings.backend_url, 
+                        headers=headers, 
+                        json=request.model_dump()
+                    ) as response:
+                        if response.status_code >= 400:
+                            err = await response.aread()
+                            yield err
+                            return
+                        async for chunk in response.aiter_bytes():
+                            yield chunk
+            return StreamingResponse(proxy_stream(), media_type="text/event-stream")
+        else:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(
+                    settings.backend_url,
+                    headers=headers,
+                    json=request.model_dump(),
+                )
+            if response.status_code >= 400:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+            return response.json()
     except httpx.RequestError as exc:
         raise HTTPException(
             status_code=502,
             detail=f"Failed to connect to upstream LLM backend ({settings.backend_url}): {exc}",
         )
-

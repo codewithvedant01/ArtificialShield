@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  proxy:
+    build: .
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - THRESHOLD=0.85
+      - PORT=8080
+      - POLICY_MODE=block
+      - DB_PATH=data/audit.db
+
+  dashboard:
+    build: .
+    command: streamlit run dashboard/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - API_BASE=http://proxy:8080

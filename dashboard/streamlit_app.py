@@ -240,50 +240,25 @@ def get_direct_detector():
 
 
 def scan_text_direct(text: str, custom_threshold: float, policy_mode: str) -> dict:
-    from app.audit import log_event
-    from app.normalize import extract_encoded_payloads, segment_text
-
-    detector = get_direct_detector()
-    segments = segment_text(text, settings.max_segment_chars)
-
-    for encoded in extract_encoded_payloads(text):
-        for sub in segment_text(encoded, settings.max_segment_chars):
-            if sub not in segments:
-                segments.append(f"[decoded base64]: {sub}")
-
-    start = time.perf_counter()
-    scored, max_score = detector.score_segments(segments)
-    latency_ms = (time.perf_counter() - start) * 1000
-
-    decision = "allowed"
-    if max_score >= custom_threshold:
-        decision = "blocked"
-    elif policy_mode == "flag" and max_score >= custom_threshold - 0.1:
-        decision = "flagged"
-
-    segment_payload = [
-        {"text": item.text, "score": round(item.score, 4), "label": item.label}
-        for item in scored
-    ]
-
-    if decision in {"blocked", "flagged"}:
-        log_event(
-            endpoint="direct://embedded",
-            max_score=max_score,
-            threshold=custom_threshold,
-            latency_ms=latency_ms,
-            payload=text[:4000],
-            decision=decision,
-        )
-
-    return {
-        "max_score": round(max_score, 4),
-        "threshold": custom_threshold,
-        "decision": decision,
-        "latency_ms": round(latency_ms, 2),
-        "segments": segment_payload,
-    }
-
+    from app.policy import evaluate_payload
+    old_thresh = settings.threshold
+    old_mode = settings.policy_mode
+    settings.threshold = custom_threshold
+    settings.policy_mode = policy_mode
+    
+    try:
+        detector = get_direct_detector()
+        result = evaluate_payload(detector, text, source_label="Streamlit-Direct")
+        return {
+            "max_score": result["max_score"],
+            "threshold": custom_threshold,
+            "decision": result["action"],
+            "latency_ms": result["latency_ms"],
+            "segments": result["segments"],
+        }
+    finally:
+        settings.threshold = old_thresh
+        settings.policy_mode = old_mode
 
 def api_health(base_url: str) -> dict | None:
     try:
@@ -557,32 +532,39 @@ with tab_ops:
     else:
         df = pd.DataFrame(events)
         df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
-        blocked_num = int((df["decision"] == "blocked").sum())
-        flagged_num = int((df["decision"] == "flagged").sum())
+        blocked_num = int((df["action"] == "blocked").sum())
+        flagged_num = int((df["action"] == "flagged").sum())
 
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Events", len(df))
         m2.metric("Blocked", blocked_num)
         m3.metric("Flagged", flagged_num)
-        m4.metric("Avg Latency", f"{df['latency_ms'].mean():.1f} ms")
-
+        
         st.markdown("---")
+        
+        # Charts
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown("**Blocks Over Time**")
+            # Group by hour or just plot sequence
+            time_df = df.copy()
+            time_df.set_index("timestamp", inplace=True)
+            st.bar_chart(time_df["action"].apply(lambda x: 1 if x == "blocked" else 0).resample('D').sum())
+            
+        with c2:
+            st.markdown("**Score Histogram**")
+            st.bar_chart(df["max_score"], height=200)
 
-        choices = [
-            f"#{r.id} · {r.decision.upper()} · {r.max_score:.3f} · {str(r.timestamp)[:19]}"
-            for r in df.itertuples()
-        ]
-        sel = st.selectbox("Inspect event", choices)
-        selected_row = df.iloc[choices.index(sel)]
+        st.markdown("**Searchable Incident Table**")
+        v = df[["id", "timestamp", "request_id", "source_label", "action", "max_score", "threshold", "offending_chunk"]].copy()
+        v["timestamp"] = v["timestamp"].astype(str)
+        v = v.sort_values(by="id", ascending=False)
+        st.dataframe(
+            v, 
+            use_container_width=True, 
+            hide_index=True,
+            column_config={
+                "offending_chunk": st.column_config.TextColumn("Offending Chunk", width="large"),
+            }
+        )
 
-        p1, p2, p3 = st.columns(3)
-        p1.write(f"**Endpoint:** `{selected_row['endpoint']}`")
-        p2.write(f"**Score / τ:** `{selected_row['max_score']:.4f} / {selected_row['threshold']}`")
-        p3.write(f"**Latency:** `{selected_row['latency_ms']:.1f} ms`")
-
-        st.code(selected_row["payload"], language="text")
-
-        with st.expander("Full table"):
-            v = df[["id", "timestamp", "endpoint", "decision", "max_score", "threshold", "latency_ms"]].copy()
-            v["timestamp"] = v["timestamp"].astype(str)
-            st.dataframe(v, use_container_width=True, hide_index=True)
