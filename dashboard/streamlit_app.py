@@ -467,6 +467,12 @@ with tab_scan:
                 )
 
                 st.progress(min(max(score, 0.0), 1.0))
+                
+                if decision == "allowed":
+                    st.markdown("**Simulated LLM Output:**")
+                    from baseline.vulnerable_agent import simulate_vulnerable_response
+                    sim_ans = simulate_vulnerable_response(text_input, "No extra context.")
+                    st.info(f"In a real deployment, ArtificialShield forwards this safe payload to your backend LLM. \n\n**Mock Backend Response:**\n{sim_ans}")
 
             if segments:
                 st.markdown("**Segment Breakdown**")
@@ -570,5 +576,6 @@ with tab_ops:
                 "offending_chunk": st.column_config.TextColumn("Offending Chunk", width="large"),
             }
         )
+
 
 
