@@ -294,7 +294,45 @@ events = fetch_events()
 # ==========================================
 # SIDEBAR
 # ==========================================
+def get_real_ai_response(query: str, context: str = "") -> str:
+    # We will read these from session state since they are set inside the sidebar
+    api_key = st.session_state.get("demo_api_key", "")
+    api_url = st.session_state.get("demo_api_url", "https://api.openai.com/v1/chat/completions")
+    api_model = st.session_state.get("demo_api_model", "gpt-4o-mini")
+    
+    if not api_key:
+        from baseline.vulnerable_agent import simulate_vulnerable_response
+        return simulate_vulnerable_response(query, context)
+        
+    import httpx
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+    prompt = query
+    if context:
+        prompt = f"Context:\n{context}\n\nQuery:\n{query}"
+        
+    payload = {
+        "model": api_model,
+        "messages": [{"role": "system", "content": "You are a helpful AI assistant."}, {"role": "user", "content": prompt}]
+    }
+    
+    try:
+        response = httpx.post(api_url, headers=headers, json=payload, timeout=15.0)
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"**Error contacting AI API:** {e}"
+
 with st.sidebar:
+    st.markdown("### ?? Real AI Integration")
+    st.caption("Provide an API key to see actual AI responses for safe prompts.")
+    st.text_input("OpenAI-Compatible API URL", value="https://api.openai.com/v1/chat/completions", key="demo_api_url")
+    st.text_input("Model Name", value="gpt-4o-mini", key="demo_api_model")
+    st.text_input("API Key", type="password", key="demo_api_key")
+    st.markdown("---")
+
     st.markdown("**Configuration**")
     
     api_target = st.radio(
@@ -469,10 +507,13 @@ with tab_scan:
                 st.progress(min(max(score, 0.0), 1.0))
                 
                 if decision == "allowed":
-                    st.markdown("**Simulated LLM Output:**")
-                    from baseline.vulnerable_agent import simulate_vulnerable_response
-                    sim_ans = simulate_vulnerable_response(text_input, "No extra context.")
-                    st.info(f"In a real deployment, ArtificialShield forwards this safe payload to your backend LLM. \n\n**Mock Backend Response:**\n{sim_ans}")
+                    st.markdown("**Guarded LLM Output:**")
+                    with st.spinner("Generating response..."):
+                        ai_ans = get_real_ai_response(text_input, "")
+                    if st.session_state.get("demo_api_key", ""):
+                        st.success(ai_ans)
+                    else:
+                        st.info(f"*(Mock Response - Enter an API Key in the sidebar for real AI integration)*\n\n**Backend Response:**\n{ai_ans}")
 
             if segments:
                 st.markdown("**Segment Breakdown**")
@@ -529,8 +570,12 @@ with tab_sim:
             else:
                 st.code(f"[HTTP 200 OK]\nDecision: ALLOWED\nScore: {sc:.4f}\nLatency: {lat:.1f}ms", language="text")
                 st.markdown("**Guarded LLM Output:**")
-                guarded_out = simulate_vulnerable_response(sim_q, sim_c)
-                st.code(guarded_out, language="text")
+                with st.spinner("Generating response..."):
+                    guarded_out = get_real_ai_response(sim_q, sim_c)
+                if st.session_state.get("demo_api_key", ""):
+                    st.success(guarded_out)
+                else:
+                    st.info(f"*(Mock Response - Enter API Key for real AI)*\n\n{guarded_out}")
 
 # ==========================================
 # TAB 3: AUDIT LOG
@@ -576,6 +621,9 @@ with tab_ops:
                 "offending_chunk": st.column_config.TextColumn("Offending Chunk", width="large"),
             }
         )
+
+
+
 
 
 
