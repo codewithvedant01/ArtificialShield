@@ -113,7 +113,8 @@ async def chat_completions(request: ChatCompletionRequest) -> Any:
                 },
             )
 
-    if not settings.backend_url:
+        if not settings.backend_url:
+        last_user_msg = next((m.content for m in reversed(request.messages) if m.role == "user"), "your query")
         resp_json = {
             "id": "chatcmpl-shield-passthrough",
             "object": "chat.completion",
@@ -123,7 +124,7 @@ async def chat_completions(request: ChatCompletionRequest) -> Any:
                     "index": 0,
                     "message": {
                         "role": "assistant",
-                        "content": "ArtificialShield: Payload passed guardrail inspection (no upstream LLM backend configured).",
+                        "content": f"ArtificialShield (Mock Backend): Payload passed guardrail inspection. Here is the answer to your query: '{last_user_msg}'",
                     },
                     "finish_reason": "stop",
                 }
@@ -170,3 +171,6 @@ async def chat_completions(request: ChatCompletionRequest) -> Any:
             status_code=502,
             detail=f"Failed to connect to upstream LLM backend ({settings.backend_url}): {exc}",
         )
+
+
+

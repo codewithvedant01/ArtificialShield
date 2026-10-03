@@ -522,6 +522,9 @@ with tab_sim:
                 st.caption("Attack neutralized at proxy gateway.")
             else:
                 st.code(f"[HTTP 200 OK]\nDecision: ALLOWED\nScore: {sc:.4f}\nLatency: {lat:.1f}ms", language="text")
+                st.markdown("**Guarded LLM Output:**")
+                guarded_out = simulate_vulnerable_response(sim_q, sim_c)
+                st.code(guarded_out, language="text")
 
 # ==========================================
 # TAB 3: AUDIT LOG
@@ -567,4 +570,5 @@ with tab_ops:
                 "offending_chunk": st.column_config.TextColumn("Offending Chunk", width="large"),
             }
         )
+
 
