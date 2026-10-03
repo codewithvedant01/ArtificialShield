@@ -63,7 +63,8 @@ def test_chat_completion_block():
         }
         response = client.post("/v1/chat/completions", json=payload)
         assert response.status_code == 403
-        data = response.json()["detail"]
+        data = response.json()
         assert data["error"] == "prompt_injection_detected"
         assert data["max_score"] == 0.9
         assert data["offending_chunk_index"] == 0
+

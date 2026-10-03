@@ -113,7 +113,7 @@ async def chat_completions(request: ChatCompletionRequest) -> Any:
                 },
             )
 
-        if not settings.backend_url:
+    if not settings.backend_url:
         last_user_msg = next((m.content for m in reversed(request.messages) if m.role == "user"), "your query")
         resp_json = {
             "id": "chatcmpl-shield-passthrough",
@@ -171,6 +171,8 @@ async def chat_completions(request: ChatCompletionRequest) -> Any:
             status_code=502,
             detail=f"Failed to connect to upstream LLM backend ({settings.backend_url}): {exc}",
         )
+
+
 
 
 
